@@ -1,0 +1,30 @@
+{
+  "$schema":"http://json-schema.org/draft-07/schema#",
+  "type":"object",
+  "properties":{
+    "stream":{"type":"object",
+      "properties":{
+        "type":{"enum":["RTMP","NDI"]},
+        "url":{"type":"string"}
+      },
+      "required":["type","url"]
+    },
+    "whisperModel":{"enum":["tiny","base","small","medium","large"]},
+    "llmModel":{"type":"string"},
+    "ocrMode":{"enum":["OFF","OCR","OCR_PLUS_DONUT"]},
+    "llmBackend":{"enum":["LOCAL","OPENAI","GROK"]},
+    "llmEndpoints":{"type":"array","items":{
+        "type":"object",
+        "properties":{"name":{"type":"string"},"url":{"type":"string"},"key":{"type":"string"}},
+        "required":["name","url"]
+    }},
+    "quickPrompt":{"type":"string"},
+    "summaryPrompt":{"type":"string"},
+    "templates":{"type":"array","items":{
+        "type":"object",
+        "properties":{"id":{"type":"string"},"name":{"type":"string"},"quickPrompt":{"type":"string"},"summaryPrompt":{"type":"string"}},
+        "required":["id","name"]
+    }}
+  },
+  "required":["stream","whisperModel","llmModel","ocrMode","llmBackend","llmEndpoints","quickPrompt","summaryPrompt"]
+}

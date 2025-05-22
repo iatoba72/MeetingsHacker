@@ -1,0 +1,14 @@
+# Core ML and Data Handling
+transformers
+torch
+# For Whisper (if using faster-whisper, it has specific dependencies)
+faster-whisper
+# For Vision
+opencv-python
+pytesseract
+# For Vector DB
+chromadb
+sentence-transformers
+# Utility (though not strictly ML, often used)
+# numpy 
+# pandas
