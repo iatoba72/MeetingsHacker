@@ -1,5 +1,6 @@
 {
   "$schema":"http://json-schema.org/draft-07/schema#",
+  "$comment": "Schema for the main application configuration, excluding prompt templates.",
   "type":"object",
   "properties":{
     "stream":{"type":"object",
@@ -19,12 +20,7 @@
         "required":["name","url"]
     }},
     "quickPrompt":{"type":"string"},
-    "summaryPrompt":{"type":"string"},
-    "templates":{"type":"array","items":{
-        "type":"object",
-        "properties":{"id":{"type":"string"},"name":{"type":"string"},"quickPrompt":{"type":"string"},"summaryPrompt":{"type":"string"}},
-        "required":["id","name"]
-    }}
+    "summaryPrompt":{"type":"string"}
   },
   "required":["stream","whisperModel","llmModel","ocrMode","llmBackend","llmEndpoints","quickPrompt","summaryPrompt"]
 }

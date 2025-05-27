@@ -1,14 +1,25 @@
 # Core ML and Data Handling
 transformers
-torch
+torch>=2.0.0
+numpy>=1.20.0
+accelerate>=0.20.0
+bitsandbytes>=0.40.0
 # For Whisper (if using faster-whisper, it has specific dependencies)
-faster-whisper
+faster-whisper>=0.10.0
 # For Vision
 opencv-python
-pytesseract
+# For OCR:
+Pillow>=9.0.0
+pytesseract>=0.3.10
+# Note: Tesseract OCR engine must be installed system-wide.
+# On Debian/Ubuntu: sudo apt-get install tesseract-ocr
+# On macOS: brew install tesseract
+# Ensure tesseract command is in PATH or set pytesseract.tesseract_cmd in code.
 # For Vector DB
-chromadb
-sentence-transformers
+chromadb>=0.4.15
+sentence-transformers>=2.2.0
+# For OpenAI API
+openai>=1.0.0
+tiktoken>=0.5.0
 # Utility (though not strictly ML, often used)
-# numpy 
 # pandas

@@ -1,11 +1,15 @@
 // meeting-copilot/frontend/src/pages/LiveFeed.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react'; // Added useRef
 import { socket } from '../socket';
 import AssistantFeed from '../components/AssistantFeed';
 // import LiveControls from '../components/LiveControls'; // TODO: Consider for transcription/vision toggles
 
 function LiveFeed() {
   const [messages, setMessages] = useState([]);
+  const messagesEndRef = useRef(null);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const scrollableContainerRef = useRef(null); // Ref for the scrollable messages container
+
   // TODO: Add state for transcriptionActive, visionActive if controlled from this page
   // const [transcriptionActive, setTranscriptionActive] = useState(false); 
   // const [visionActive, setVisionActive] = useState(false);
@@ -78,9 +82,32 @@ function LiveFeed() {
   //   setMessages(prev => [...prev, { type: 'system', text: `Vision analysis ${newState ? 'started' : 'stopped'}.`, ts: Date.now() }]);
   // };
 
+  useEffect(() => {
+    if (!userScrolledUp && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, userScrolledUp]);
+
+  const handleScroll = () => {
+    const container = scrollableContainerRef.current;
+    if (container) {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      // Consider user scrolled up if they are more than a few pixels from the bottom
+      const atBottom = scrollHeight - scrollTop - clientHeight <= 5;
+      if (atBottom) {
+        setUserScrolledUp(false);
+      } else {
+        setUserScrolledUp(true);
+      }
+    }
+  };
+  
+  // Wrap AssistantFeed in a div that can be the scrollable container
+  // AssistantFeed itself is responsible for rendering individual messages and the input bar.
+  // The messagesEndRef should be placed after the list of messages within AssistantFeed or its child.
   return (
-    <div className="flex flex-col h-full">
-      {/* TODO: Add LiveControls component here if created 
+    <div className="flex flex-col h-full bg-slate-900">
+      {/* 
       <LiveControls 
         transcriptionActive={transcriptionActive}
         visionActive={visionActive}
@@ -88,7 +115,17 @@ function LiveFeed() {
         onToggleVision={handleToggleVision}
       /> 
       */}
-      <AssistantFeed messages={messages} onSendMessage={handleSendMessage} />
+      <div 
+        ref={scrollableContainerRef}
+        onScroll={handleScroll} 
+        className="flex-grow overflow-y-auto p-4 space-y-4" // This div will scroll
+      >
+        <AssistantFeed 
+          messages={messages} 
+          onSendMessage={handleSendMessage} 
+          messagesEndRef={messagesEndRef} // Pass ref to AssistantFeed
+        />
+      </div>
     </div>
   );
 }

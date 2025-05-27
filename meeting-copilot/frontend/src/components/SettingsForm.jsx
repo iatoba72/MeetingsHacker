@@ -1,25 +1,39 @@
 // meeting-copilot/frontend/src/components/SettingsForm.jsx
 import React, { useState, useEffect } from 'react';
 
-function SettingsForm({ currentConfig, onSave }) {
+// Helper to get nested values safely
+const getNestedValue = (obj, path, defaultValue = '') => {
+  const value = path.split('.').reduce((acc, part) => acc && acc[part], obj);
+  return value === undefined || value === null ? defaultValue : value;
+};
+
+function SettingsForm({ section, currentData, onSave }) {
   const [formData, setFormData] = useState({});
 
   useEffect(() => {
-    // Initialize formData when currentConfig is loaded or changed
-    // Exclude 'templates' as it's handled by TemplateManager
-    const { templates, ...mainConfig } = currentConfig || {};
-    setFormData(mainConfig);
-  }, [currentConfig]);
+    // Initialize or update formData when currentData or section changes
+    // This ensures the form displays the correct section's data
+    setFormData(currentData || {});
+  }, [currentData, section]);
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
-    
-    if (name.startsWith("stream.")) {
-      const streamField = name.split(".")[1];
-      setFormData(prev => ({
-        ...prev,
-        stream: { ...prev.stream, [streamField]: type === 'checkbox' ? checked : value }
-      }));
+    const keys = name.split('.');
+
+    if (keys.length > 1) {
+      setFormData(prev => {
+        const newState = { ...prev };
+        let currentLevel = newState;
+        keys.forEach((key, index) => {
+          if (index === keys.length - 1) {
+            currentLevel[key] = type === 'checkbox' ? checked : value;
+          } else {
+            currentLevel[key] = { ...(currentLevel[key] || {}) };
+            currentLevel = currentLevel[key];
+          }
+        });
+        return newState;
+      });
     } else {
       setFormData(prev => ({
         ...prev,
@@ -28,144 +42,143 @@ function SettingsForm({ currentConfig, onSave }) {
     }
   };
   
-  // Special handler for llmEndpoints as it's an array of objects
-  // This is a simplified example: allows editing the URL of the *first* endpoint.
-  // A real UI would need add/remove/edit capabilities for multiple endpoints.
-  const handleLlmEndpointChange = (e, index) => {
-    const { name, value } = e.target; // 'name' here would be 'url' or 'key'
+  const handleLlmEndpointChange = (e, index, field) => {
+    const { value } = e.target;
     setFormData(prev => {
       const newEndpoints = [...(prev.llmEndpoints || [])];
-      if (newEndpoints[index]) {
-        newEndpoints[index] = { ...newEndpoints[index], [name]: value };
-      } else {
-        // Initialize if not existing, assuming 'name' of endpoint is fixed for this example
-        newEndpoints[index] = { name: "local_llm", url: "", key: "", [name]: value };
+      // Ensure the endpoint at the index exists, initialize if not
+      while (newEndpoints.length <= index) {
+        newEndpoints.push({ name: "", url: "", key: "" }); 
+      }
+      newEndpoints[index] = { ...newEndpoints[index], [field]: value };
+      // Ensure the name field is populated if it's the first endpoint and being created.
+      // This is a default for the simplified UI.
+      if (index === 0 && !newEndpoints[index].name) {
+        newEndpoints[index].name = "local_llm"; // Default name for the first endpoint
       }
       return { ...prev, llmEndpoints: newEndpoints };
     });
   };
 
-
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSave(formData); // Pass only the main config, templates are managed separately
+    onSave(formData); 
   };
 
-  if (Object.keys(formData).length === 0) {
-    return <div className="text-gray-400">Loading form data...</div>;
+  if (Object.keys(formData).length === 0 && currentData === null) { // Check if currentData was null initially
+    return <div className="text-slate-400">Loading form data or no data available...</div>;
   }
+  
+  const inputClass = "w-full p-2 bg-slate-700 border border-slate-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500";
+  const labelClass = "block text-sm font-medium text-slate-300 mb-1";
+  const fieldsetLegendClass = "text-lg font-medium text-blue-400 px-2";
+  const fieldsetClass = "border border-slate-700 p-4 rounded-md space-y-4";
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6 bg-gray-800 p-6 rounded-lg shadow-md">
-      <h2 className="text-2xl font-semibold text-white mb-6 border-b border-gray-700 pb-3">General Configuration</h2>
+    <form onSubmit={handleSubmit} className="space-y-6">
+      {section === 'models' && (
+        <fieldset className={fieldsetClass}>
+          <legend className={fieldsetLegendClass}>AI Model Settings</legend>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label htmlFor="whisperModel" className={labelClass}>Whisper Model</label>
+              <select name="whisperModel" id="whisperModel" value={getNestedValue(formData, 'whisperModel', 'base')} onChange={handleChange} className={inputClass}>
+                <option value="tiny">Tiny</option>
+                <option value="base">Base</option>
+                <option value="small">Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="llmModel" className={labelClass}>LLM Model Name/Path</label>
+              <input type="text" name="llmModel" id="llmModel" value={getNestedValue(formData, 'llmModel')} onChange={handleChange} className={inputClass} placeholder="e.g., Mistral7B-Instruct-v0.2-GGUF" />
+            </div>
+            <div>
+              <label htmlFor="ocrMode" className={labelClass}>OCR Mode</label>
+              <select name="ocrMode" id="ocrMode" value={getNestedValue(formData, 'ocrMode', 'OFF')} onChange={handleChange} className={inputClass}>
+                <option value="OFF">Off</option>
+                <option value="OCR">OCR Only</option>
+                <option value="OCR_PLUS_DONUT">OCR + Donut (Advanced)</option>
+              </select>
+            </div>
+          </div>
+        </fieldset>
+      )}
 
-      {/* Stream Settings */}
-      <fieldset className="border border-gray-700 p-4 rounded-md">
-        <legend className="text-lg font-medium text-blue-400 px-2">Stream Settings</legend>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="stream.type" className="block text-sm font-medium text-gray-300 mb-1">Stream Type</label>
-            <select name="stream.type" id="stream.type" value={formData.stream?.type || 'RTMP'} onChange={handleChange} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500">
-              <option value="RTMP">RTMP</option>
-              <option value="NDI">NDI</option>
-            </select>
+      {section === 'stream' && (
+        <fieldset className={fieldsetClass}>
+          <legend className={fieldsetLegendClass}>Stream Settings</legend>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label htmlFor="stream.type" className={labelClass}>Stream Type</label>
+              <select name="stream.type" id="stream.type" value={getNestedValue(formData, 'stream.type', 'RTMP')} onChange={handleChange} className={inputClass}>
+                <option value="RTMP">RTMP</option>
+                <option value="NDI">NDI</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="stream.url" className={labelClass}>Stream URL</label>
+              <input type="text" name="stream.url" id="stream.url" value={getNestedValue(formData, 'stream.url')} onChange={handleChange} className={inputClass} placeholder="rtmp://localhost/live/stream or NDI_Source_Name" />
+            </div>
           </div>
-          <div>
-            <label htmlFor="stream.url" className="block text-sm font-medium text-gray-300 mb-1">Stream URL</label>
-            <input type="text" name="stream.url" id="stream.url" value={formData.stream?.url || ''} onChange={handleChange} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500" />
-          </div>
-        </div>
-      </fieldset>
+        </fieldset>
+      )}
 
-      {/* Model Settings */}
-      <fieldset className="border border-gray-700 p-4 rounded-md">
-        <legend className="text-lg font-medium text-blue-400 px-2">AI Model Settings</legend>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {section === 'endpoints' && (
+         <fieldset className={fieldsetClass}>
+          <legend className={fieldsetLegendClass}>LLM Endpoint Configuration</legend>
           <div>
-            <label htmlFor="whisperModel" className="block text-sm font-medium text-gray-300 mb-1">Whisper Model</label>
-            <select name="whisperModel" id="whisperModel" value={formData.whisperModel || 'base'} onChange={handleChange} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500">
-              <option value="tiny">Tiny</option>
-              <option value="base">Base</option>
-              <option value="small">Small</option>
-              <option value="medium">Medium</option>
-              <option value="large">Large</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="llmModel" className="block text-sm font-medium text-gray-300 mb-1">LLM Model Name/Path</label>
-            <input type="text" name="llmModel" id="llmModel" value={formData.llmModel || ''} onChange={handleChange} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., Mistral7B-Instruct-v0.2-GGUF" />
-          </div>
-          <div>
-            <label htmlFor="ocrMode" className="block text-sm font-medium text-gray-300 mb-1">OCR Mode</label>
-            <select name="ocrMode" id="ocrMode" value={formData.ocrMode || 'OFF'} onChange={handleChange} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500">
-              <option value="OFF">Off</option>
-              <option value="OCR">OCR Only</option>
-              <option value="OCR_PLUS_DONUT">OCR + Donut (Advanced)</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="llmBackend" className="block text-sm font-medium text-gray-300 mb-1">LLM Backend</label>
-            <select name="llmBackend" id="llmBackend" value={formData.llmBackend || 'LOCAL'} onChange={handleChange} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500">
-              <option value="LOCAL">Local</option>
+            <label htmlFor="llmBackend" className={labelClass}>LLM Backend</label>
+            <select name="llmBackend" id="llmBackend" value={getNestedValue(formData, 'llmBackend', 'LOCAL')} onChange={handleChange} className={inputClass}>
+              <option value="LOCAL">Local (Llama.cpp server)</option>
               <option value="OPENAI">OpenAI API</option>
-              <option value="GROK">Grok API</option>
+              <option value="ANTHROPIC">Anthropic API</option>
+              {/* <option value="GROK">Grok API</option> TODO: Add if supported */}
+              <option value="OLLAMA">Ollama</option>
+              <option value="CUSTOM_API">Custom API</option>
             </select>
           </div>
-        </div>
-      </fieldset>
-      
-      {/* LLM Endpoints - Simplified for first endpoint URL */}
-      {/* TODO: Add UI for managing multiple LLM endpoints (add/remove/edit all fields) */}
-      <fieldset className="border border-gray-700 p-4 rounded-md">
-        <legend className="text-lg font-medium text-blue-400 px-2">LLM Endpoint Configuration</legend>
-        {formData.llmEndpoints && formData.llmEndpoints.length > 0 && (
-          <div className="space-y-2">
-            <label htmlFor="llmEndpoints.0.url" className="block text-sm font-medium text-gray-300 mb-1">
-              Primary LLM Endpoint URL ({formData.llmEndpoints[0].name || 'local_llm'})
-            </label>
-            <input
-              type="text"
-              name="url" // Field name within the endpoint object
-              id="llmEndpoints.0.url"
-              value={formData.llmEndpoints[0].url || ''}
-              onChange={(e) => handleLlmEndpointChange(e, 0)}
-              className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500"
-              placeholder="http://localhost:8080/completion"
-            />
-             <label htmlFor="llmEndpoints.0.key" className="block text-sm font-medium text-gray-300 mb-1">
-              Primary LLM API Key (if any)
-            </label>
-            <input
-              type="password" // Use password type for keys
-              name="key" // Field name within the endpoint object
-              id="llmEndpoints.0.key"
-              value={formData.llmEndpoints[0].key || ''}
-              onChange={(e) => handleLlmEndpointChange(e, 0)}
-              className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500"
-              placeholder="Optional API Key"
-            />
+          <p className="text-xs text-slate-400 mt-1">For local backends, ensure the server is running. For cloud APIs, ensure endpoints and keys are set below.</p>
+          
+          <h3 className="text-md font-semibold text-slate-200 mt-4 pt-2 border-t border-slate-700">Primary Endpoint Details</h3>
+          <p className="text-xs text-slate-400 mb-2">Currently, only the first endpoint in the array is configurable here. Full array management is a TODO.</p>
+          
+          {/* Simplified: Edit first endpoint */}
+          <div>
+            <label htmlFor="llmEndpoints.0.name" className={labelClass}>Endpoint Name</label>
+            <input type="text" name="llmEndpoints.0.name" id="llmEndpoints.0.name" value={getNestedValue(formData, 'llmEndpoints.0.name', 'local_llm')} onChange={(e) => handleLlmEndpointChange(e, 0, 'name')} className={inputClass} placeholder="e.g., local_mistral, openai_gpt4" />
           </div>
-        )}
-        {(!formData.llmEndpoints || formData.llmEndpoints.length === 0) && (
-            <p className="text-sm text-gray-400">No LLM endpoints configured. Add one via direct config edit or future UI.</p>
-        )}
-      </fieldset>
+          <div>
+            <label htmlFor="llmEndpoints.0.url" className={labelClass}>Endpoint URL</label>
+            <input type="text" name="llmEndpoints.0.url" id="llmEndpoints.0.url" value={getNestedValue(formData, 'llmEndpoints.0.url')} onChange={(e) => handleLlmEndpointChange(e, 0, 'url')} className={inputClass} placeholder="http://localhost:8080/completion" />
+          </div>
+          <div>
+            <label htmlFor="llmEndpoints.0.key" className={labelClass}>API Key (if required)</label>
+            <input type="password" name="llmEndpoints.0.key" id="llmEndpoints.0.key" value={getNestedValue(formData, 'llmEndpoints.0.key')} onChange={(e) => handleLlmEndpointChange(e, 0, 'key')} className={inputClass} placeholder="Enter API Key" />
+          </div>
+        </fieldset>
+      )}
 
-      {/* Prompt Settings */}
-      <fieldset className="border border-gray-700 p-4 rounded-md">
-        <legend className="text-lg font-medium text-blue-400 px-2">Prompt Engineering</legend>
-        <div>
-          <label htmlFor="quickPrompt" className="block text-sm font-medium text-gray-300 mb-1">Quick Insight Prompt</label>
-          <textarea name="quickPrompt" id="quickPrompt" value={formData.quickPrompt || ''} onChange={handleChange} rows="3" className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., Provide a quick insight based on the latest transcript: {transcript}"></textarea>
-        </div>
-        <div className="mt-4">
-          <label htmlFor="summaryPrompt" className="block text-sm font-medium text-gray-300 mb-1">Summary Prompt</label>
-          <textarea name="summaryPrompt" id="summaryPrompt" value={formData.summaryPrompt || ''} onChange={handleChange} rows="4" className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., Summarize the meeting so far... based on: {transcript} and slide content: {slides}"></textarea>
-        </div>
-      </fieldset>
+      {section === 'prompts' && (
+        <fieldset className={fieldsetClass}>
+          <legend className={fieldsetLegendClass}>Prompt Engineering (Main Prompts)</legend>
+          <div>
+            <label htmlFor="quickPrompt" className={labelClass}>Quick Insight Prompt</label>
+            <textarea name="quickPrompt" id="quickPrompt" value={getNestedValue(formData, 'quickPrompt')} onChange={handleChange} rows="4" className={inputClass} placeholder="e.g., Provide a quick insight based on the latest transcript: {transcript}"></textarea>
+          </div>
+          <div>
+            <label htmlFor="summaryPrompt" className={labelClass}>Summary Prompt</label>
+            <textarea name="summaryPrompt" id="summaryPrompt" value={getNestedValue(formData, 'summaryPrompt')} onChange={handleChange} rows="6" className={inputClass} placeholder="e.g., Summarize the meeting so far... based on: {transcript} and slide content: {slides}"></textarea>
+          </div>
+        </fieldset>
+      )}
       
-      <button type="submit" className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50">
-        Save Configuration
+      <button 
+        type="submit" 
+        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75"
+      >
+        Save Settings for {section.charAt(0).toUpperCase() + section.slice(1)}
       </button>
     </form>
   );

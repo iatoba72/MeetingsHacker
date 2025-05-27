@@ -1,4 +1,5 @@
 {
+  "$comment": "Default configuration for the Meeting Copilot application. User-specific overrides should be carefully validated against schema.json.",
   "stream": { "type": "RTMP", "url": "rtmp://localhost/live/stream" },
   "whisperModel": "base",
   "llmModel": "Mistral7B-Instruct-v0.2-GGUF",
@@ -6,6 +7,5 @@
   "llmBackend": "LOCAL",
   "llmEndpoints": [{ "name": "local_llm", "url": "http://localhost:8080/completion", "key": "" }],
   "quickPrompt": "Provide a quick insight based on the latest transcript: {transcript}",
-  "summaryPrompt": "Summarize the meeting so far, focusing on key decisions and action items, based on: {transcript} and slide content: {slides}",
-  "templates": []
+  "summaryPrompt": "Summarize the meeting so far, focusing on key decisions and action items, based on: {transcript} and slide content: {slides}"
 }
