@@ -8,6 +8,7 @@ import threading
 import time
 import subprocess # Added for ffmpeg process management
 import uuid # For current_meeting_id
+import sys # Explicitly for Scheduler error printing, though already imported
 
 # --- Configuration ---
 SIMULATION_MODE = True 
@@ -27,10 +28,15 @@ current_config = {
 # --- Global State ---
 transcription_active = False  
 vision_active = False         
-transcription_thread = None # Will be renamed to scheduler_thread
+# transcription_thread = None # Will be replaced by scheduler_instance's internal thread for scheduled tasks
+simulation_thread = None # For file-based simulation if needed
 vision_thread = None          
 ffmpeg_process = None
-current_meeting_id = None # Will be set in initialize_components
+current_meeting_id = "mtg_default_id" # Placeholder, to be initialized properly
+MEETING_ID = None # Alias or specific use? For now, will sync with current_meeting_id or remove if redundant
+CURRENT_CONTEXT = {} # For storing dynamic contextual information
+
+scheduler_instance = None
 
 transcriber_instance = None
 vision_analyzer_instance = None
@@ -41,10 +47,88 @@ llm_instance = None
 transcript_buffer = [] # Stores (timestamp, text) tuples or similar
 slide_text_buffer = [] # Stores (timestamp, text, image_path_optional) tuples
 
-# Timers for scheduled tasks
-last_insight_time = 0
-last_summary_time = 0
+# Timers for scheduled tasks are now managed by the Scheduler class
+# last_insight_time = 0
+# last_summary_time = 0
 
+
+# --- Scheduler Class ---
+class Scheduler:
+    def __init__(self, quick_interval_sec, summary_interval_sec, quick_insight_func, summary_func, is_active_func):
+        self.quick_interval_sec = quick_interval_sec
+        self.summary_interval_sec = summary_interval_sec
+        self.quick_insight_func = quick_insight_func
+        self.summary_func = summary_func
+        self.is_active_func = is_active_func # Function to check if tasks should run (e.g., transcription_active)
+
+        self._timer_thread = None
+        self._stop_event = threading.Event()
+        
+        self.last_quick_insight_time = 0
+        self.last_summary_time = 0
+        # print("[Scheduler] Initialized.", flush=True)
+
+    def _run(self):
+        # print("[Scheduler] Run loop started.", flush=True)
+        self.last_quick_insight_time = time.time() # Initialize on start
+        self.last_summary_time = time.time()     # Initialize on start
+
+        while not self._stop_event.is_set():
+            if self.is_active_func():
+                current_time = time.time()
+                # Quick Insight
+                if (current_time - self.last_quick_insight_time) >= self.quick_interval_sec:
+                    try:
+                        self.quick_insight_func()
+                    except Exception as e:
+                        print(f"[Scheduler] Error in quick_insight_func: {e}", file=sys.stderr, flush=True)
+                    self.last_quick_insight_time = current_time
+                
+                # Summary
+                if (current_time - self.last_summary_time) >= self.summary_interval_sec:
+                    try:
+                        self.summary_func()
+                    except Exception as e:
+                        print(f"[Scheduler] Error in summary_func: {e}", file=sys.stderr, flush=True)
+                    self.last_summary_time = current_time
+            
+            # Sleep for a short duration before checking again
+            # Adjust sleep time for responsiveness vs. resource use.
+            # This loop will check roughly every `check_interval` seconds.
+            check_interval = min(self.quick_interval_sec, self.summary_interval_sec, 1.0) if self.quick_interval_sec > 0 and self.summary_interval_sec > 0 else 1.0
+            # Ensure sleep is not excessively long if intervals are large, but also not too busy.
+            # Max sleep of 1s to allow relatively quick stop.
+            time.sleep(min(check_interval / 2, 1.0) if check_interval > 0 else 1.0) 
+        # print("[Scheduler] Run loop stopped.", flush=True)
+
+    def start(self):
+        if self._timer_thread is not None and self._timer_thread.is_alive():
+            # print("[Scheduler] Already running.", flush=True)
+            return
+        
+        self._stop_event.clear()
+        self._timer_thread = threading.Thread(target=self._run, daemon=True)
+        self._timer_thread.start()
+        # print("[Scheduler] Started.", flush=True)
+
+    def stop(self):
+        # print("[Scheduler] Stopping...", flush=True)
+        self._stop_event.set()
+        if self._timer_thread is not None and self._timer_thread.is_alive():
+            self._timer_thread.join(timeout=2) # Wait for thread to finish
+        self._timer_thread = None # Clear the thread reference
+        # print("[Scheduler] Stopped.", flush=True)
+
+    def reset(self, quick_interval_sec, summary_interval_sec):
+        # print(f"[Scheduler] Resetting intervals: Quick={quick_interval_sec}s, Summary={summary_interval_sec}s", flush=True)
+        self.quick_interval_sec = quick_interval_sec
+        self.summary_interval_sec = summary_interval_sec
+        # Timers will pick up new intervals in the _run loop's next check.
+        # Reset last execution times to trigger based on new intervals from now.
+        self.last_quick_insight_time = time.time()
+        self.last_summary_time = time.time()
+        # If it was stopped, this doesn't auto-start it. Caller should manage start/stop.
+        # If already running, it will adapt.
 
 # --- Communication with Node.js ---
 def send_to_node(data_dict):
@@ -72,12 +156,13 @@ def send_to_node(data_dict):
 # --- Component Initialization ---
 def initialize_components():
     """Initializes AI components."""
-    global transcriber_instance, vision_analyzer_instance, llm_instance, current_meeting_id
+    global transcriber_instance, vision_analyzer_instance, llm_instance, current_meeting_id, scheduler_instance, MEETING_ID
     # Import vector_db functions directly
-    from vector_db import add_chunk as vec_add_chunk, query as vec_query 
+    # from vector_db import add_chunk as vec_add_chunk, query as vec_query # This is imported locally in functions now
     send_to_node({"event": "system_message", "message": "Python: Initializing components..."})
 
-    current_meeting_id = str(uuid.uuid4())
+    current_meeting_id = str(uuid.uuid4()) # Generate a new meeting ID on init
+    MEETING_ID = current_meeting_id # Sync MEETING_ID if it's meant to be an alias
     send_to_node({"event": "status", "message_type":"info", "content": f"New meeting session ID: {current_meeting_id}"})
     
     # Using actual classes if available, otherwise dummy ones will be used due to import fallbacks
@@ -154,6 +239,20 @@ def initialize_components():
             llm_instance = DummyLLM()
 
     # VectorDB functions are used directly, no instance needed.
+    
+    # Initialize Scheduler
+    # TODO: Ensure current_config is loaded before this if not using hardcoded defaults
+    q_interval = current_config.get('scheduling', {}).get('quickIntervalSec', 10)
+    s_interval = current_config.get('scheduling', {}).get('summaryIntervalSec', 60)
+    
+    scheduler_instance = Scheduler(
+        quick_interval_sec=q_interval,
+        summary_interval_sec=s_interval,
+        quick_insight_func=quick_insight,
+        summary_func=summary,
+        is_active_func=lambda: transcription_active # Scheduler tasks run if transcription is active
+    )
+    send_to_node({"event": "system_message", "message": f"Python: Scheduler initialized (Quick: {q_interval}s, Summary: {s_interval}s)." })
     send_to_node({"event": "system_message", "message": "Python: Components initialization attempt finished."})
 
 
@@ -205,8 +304,8 @@ def get_slide_text_for_summary(max_slides=3):
 
 def quick_insight():
     """Generates and sends a quick insight based on recent context."""
-    global llm_instance, current_config, last_insight_time, current_meeting_id
-    from vector_db import query as vec_query # Import here to avoid top-level if vector_db fails
+    global llm_instance, current_config, current_meeting_id, CURRENT_CONTEXT # Added CURRENT_CONTEXT
+    from vector_db import query as vec_query, add_chunk as vec_add_chunk 
     
     if not llm_instance: 
         send_to_node({"event": "warning", "message": "Quick Insight: LLM not available."})
@@ -215,12 +314,11 @@ def quick_insight():
     latest_text_snippet = get_latest_transcript_snippet()
     
     if "No recent transcript available" in latest_text_snippet:
-        send_to_node({"event": "system_message", "message": "Quick Insight: No transcript yet for insight."})
+        # send_to_node({"event": "system_message", "message": "Quick Insight: No transcript yet for insight."}) 
         return
 
     context_hits = []
     if latest_text_snippet.strip() and current_meeting_id:
-        # print(f"[AssistantWorker] Querying VectorDB for quick_insight with: '{latest_text_snippet[:50]}...'", file=sys.stderr, flush=True)
         try:
             context_hits = vec_query(latest_text_snippet, top_k=1) 
         except Exception as e:
@@ -228,19 +326,23 @@ def quick_insight():
     
     context_str = ("\nContext:\n" + "\n".join([f"- {hit['text']}" for hit in context_hits])) if context_hits else ""
     prompt_template = current_config.get('quickPrompt', "Provide a quick insight on the following text: {latestText}\nAdditional context if relevant: {vector_context}")
-    prompt = prompt_template.format(latestText=latest_text_snippet, vector_context=context_str if context_str else "N/A")
+    prompt_content = prompt_template.format(latestText=latest_text_snippet, vector_context=context_str if context_str else "N/A")
     
-    response_text = "[ERROR: LLM not initialized]" if not llm_instance else llm_instance.generate_response(prompt, max_tokens=100) # Increased tokens slightly
+    response_text = "[ERROR: LLM not initialized]" if not llm_instance else llm_instance.generate_response(
+        prompt_content, 
+        max_tokens=100,
+        current_meeting_context=CURRENT_CONTEXT
+    ) 
     
     message = {"event": "assistant", "type": "insight", "message": response_text}
     send_to_node(message)
-    last_insight_time = time.time()
+    # last_insight_time = time.time() # Managed by Scheduler
 
 
 def summary():
     """Generates and sends a meeting summary."""
-    global llm_instance, current_config, last_summary_time, current_meeting_id
-    from vector_db import query as vec_query # Import here
+    global llm_instance, current_config, current_meeting_id, CURRENT_CONTEXT # Added CURRENT_CONTEXT
+    from vector_db import query as vec_query, add_chunk as vec_add_chunk
 
     if not llm_instance: 
         send_to_node({"event": "warning", "message": "Summary: LLM not available."})
@@ -250,7 +352,7 @@ def summary():
     slide_context = get_slide_text_for_summary() 
     
     if "No transcript available" in transcript_context and "No slide content detected" in slide_context:
-        send_to_node({"event": "system_message", "message": "Summary: Not enough content yet for summary."})
+        # send_to_node({"event": "system_message", "message": "Summary: Not enough content yet for summary."}) 
         return
 
     query_for_vector_db = (transcript_context[-700:] + " " + slide_context[-300:]).strip()
@@ -258,7 +360,6 @@ def summary():
     
     context_hits = []
     if current_meeting_id:
-        # print(f"[AssistantWorker] Querying VectorDB for summary with: '{query_for_vector_db[:50]}...'", file=sys.stderr, flush=True)
         try:
             context_hits = vec_query(query_for_vector_db, top_k=3)
         except Exception as e:
@@ -267,13 +368,17 @@ def summary():
     vector_hits_str = ("\n\nRelevant Context from Document Store:\n" + "\n".join([f"- {hit['text']} (meta: {hit.get('meta', {})}) " for hit in context_hits])) if context_hits else ""
     
     prompt_template = current_config.get('summaryPrompt', "Summarize based on: {transcript}\nSlides: {slides}\nRelated Info: {vector_hits}")
-    prompt = prompt_template.format(transcript=transcript_context, slides=slide_context, vector_hits=vector_hits_str if vector_hits_str else "N/A")
+    prompt_content = prompt_template.format(transcript=transcript_context, slides=slide_context, vector_hits=vector_hits_str if vector_hits_str else "N/A")
     
-    response_text = "[ERROR: LLM not initialized]" if not llm_instance else llm_instance.generate_response(prompt, max_tokens=500) # Increased tokens
+    response_text = "[ERROR: LLM not initialized]" if not llm_instance else llm_instance.generate_response(
+        prompt_content, 
+        max_tokens=500,
+        current_meeting_context=CURRENT_CONTEXT
+    )
     
     message = {"event": "assistant", "type": "summary", "message": response_text}
     send_to_node(message)
-    last_summary_time = time.time()
+    # last_summary_time = time.time() # Managed by Scheduler
 
 
 # --- FFMPEG Stream Handling ---
@@ -341,62 +446,57 @@ def start_stream():
 
 
 # --- Core Processing Loops ---
-def transcription_loop():
-    """Scheduled tasks loop / Sim mode file transcription if ffmpeg is not active."""
-    """Scheduled tasks loop / Sim mode file transcription if ffmpeg is not active."""
-    global transcription_active, SIMULATION_MODE, SAMPLE_TRANSCRIPT_FILE, ffmpeg_process
-    global last_insight_time, last_summary_time # Ensure these are accessible
+def simulation_loop(): # Renamed from transcription_loop, focuses only on file simulation
+    """Sim mode file transcription if ffmpeg is not active."""
+    global transcription_active, SIMULATION_MODE, SAMPLE_TRANSCRIPT_FILE, ffmpeg_process, current_meeting_id
+    from vector_db import add_chunk as vec_add_chunk # Local import
     
-    send_to_node({"event": "system_message", "message": "Python: Scheduler & Simulation loop started."})
+    send_to_node({"event": "system_message", "message": "Python: Simulation loop started."})
     
     sim_lines = []
     sim_idx = 0
     
-    # Load simulation file only if truly in file simulation mode
-    # (SIMULATION_MODE true AND ffmpeg not active)
-    if SIMULATION_MODE and not (ffmpeg_process and ffmpeg_process.poll() is None):
+    if SIMULATION_MODE: # Load simulation file if in sim mode, regardless of ffmpeg initially
         try:
             with open(SAMPLE_TRANSCRIPT_FILE, 'r', encoding='utf-8') as f:
                 sim_lines = [line.strip() for line in f if line.strip()]
             if not sim_lines: 
-                sim_lines = ["Simulated transcript line 1 (file mode)."]
-                send_to_node({"event": "warning", "message": f"Simulation (file mode): {SAMPLE_TRANSCRIPT_FILE} was empty. Using default."})
-            send_to_node({"event": "system_message", "message": f"Transcription loop using file: {SAMPLE_TRANSCRIPT_FILE}"})
+                sim_lines = ["Simulated transcript line 1 (file mode)."] # Default if file empty
+                send_to_node({"event": "warning", "message": f"Simulation (file mode): {SAMPLE_TRANSCRIPT_FILE} was empty or not found. Using default."})
+            else:
+                send_to_node({"event": "system_message", "message": f"Simulation loop using file: {SAMPLE_TRANSCRIPT_FILE}"})
         except Exception as e:
             send_to_node({"event": "error", "message": f"Error loading sim transcript: {e}"})
-            sim_lines = ["Error loading sim file."]
+            sim_lines = ["Error loading sim file, using default."] # Default on error
 
     while transcription_active:
-        # File-based simulation only if ffmpeg isn't providing audio
+        # File-based simulation only runs IF:
+        # 1. SIMULATION_MODE is true
+        # 2. AND ffmpeg is NOT active (or not initialized)
+        # 3. AND sim_lines has content
         if SIMULATION_MODE and not (ffmpeg_process and ffmpeg_process.poll() is None) and sim_lines:
             text = sim_lines[sim_idx % len(sim_lines)]
-            current_segment_timestamp = time.time() # Use a consistent timestamp for the segment
+            current_segment_timestamp = time.time() 
+            speaker = f"SimSpeakerFile{((sim_idx % 2) + 1)}"
             send_to_node({
                 "event": "transcript", 
                 "text": text, 
-                "speaker": f"SimSpeakerFile{((sim_idx % 2) + 1)}", 
+                "speaker": speaker, 
                 "ts": current_segment_timestamp
             })
-            if current_meeting_id: # Add to vector DB
-                metadata = {"type": "transcript", "speaker": f"SimSpeakerFile{((sim_idx % 2) + 1)}", "timestamp": current_segment_timestamp, "meeting_id": current_meeting_id}
+            if current_meeting_id: 
+                metadata = {"type": "transcript", "speaker": speaker, "timestamp": current_segment_timestamp, "meeting_id": current_meeting_id}
                 vec_add_chunk(text=text, meta=metadata)
 
             sim_idx += 1
             time.sleep(3) # Simulate delay for file-based transcription
-            continue # Skip scheduled tasks if we just simulated to avoid immediate insight on the same text
+        else:
+            # If not doing file simulation (e.g. live audio or SIMULATION_MODE is false),
+            # this loop will just sleep. The Scheduler handles timed tasks separately.
+            time.sleep(1) 
+            
+    send_to_node({"event": "system_message", "message": "Python: Simulation loop ended."})
 
-        # Scheduled tasks part
-        if (current_time - last_insight_time) >= 10: # 10 seconds for insights
-            quick_insight()
-            # last_insight_time updated within quick_insight
-        
-        if (current_time - last_summary_time) >= 60: # 60 seconds for summaries
-            summary()
-            # last_summary_time updated within summary
-            
-        time.sleep(1) # General loop interval
-            
-    send_to_node({"event": "system_message", "message": "Python: Scheduler & Simulation loop ended."})
 
 def vision_loop():
     """Handles vision-related tasks, including slide change detection and OCR."""
@@ -434,7 +534,7 @@ def vision_loop():
                     if ocr_text and current_meeting_id:
                         metadata = {"type": "slide", "image_path": slide_event_data['image_path'], "timestamp": current_slide_timestamp, "meeting_id": current_meeting_id}
                         # print(f"[AssistantWorker] Adding slide OCR chunk to VectorDB: '{ocr_text[:30]}...'", file=sys.stderr, flush=True)
-                        vec_add_chunk(text=ocr_text, meta=metadata)
+                        vec_add_chunk(text=ocr_text, meta=metadata) # Ensure vec_add_chunk is imported
             
             time.sleep(5) 
         except Exception as e:
@@ -446,8 +546,8 @@ def vision_loop():
 # --- Command Handlers ---
 def handle_llm_query(payload):
     """Handles 'query_llm' commands from Node.js."""
-    global llm_instance, current_meeting_id
-    from vector_db import query as vec_query # Import here
+    global llm_instance, current_meeting_id, CURRENT_CONTEXT # Added CURRENT_CONTEXT
+    from vector_db import query as vec_query 
 
     prompt_text = payload.get('prompt', '')
     user_id = payload.get("user", "default_user")
@@ -458,7 +558,6 @@ def handle_llm_query(payload):
 
     context_hits = []
     if prompt_text.strip() and current_meeting_id:
-        # print(f"[AssistantWorker] Querying VectorDB for user_question with: '{prompt_text[:50]}...'", file=sys.stderr, flush=True)
         try:
             context_hits = vec_query(prompt_text, top_k=2)
         except Exception as e:
@@ -468,7 +567,12 @@ def handle_llm_query(payload):
     
     final_prompt_for_llm = f"{context_str}\n\nUser Question: {prompt_text}\nAssistant Answer:"
     
-    response_text = "[ERROR: LLM not initialized]" if not llm_instance else llm_instance.generate_response(final_prompt_for_llm, is_user_question=True, max_tokens=250)
+    response_text = "[ERROR: LLM not initialized]" if not llm_instance else llm_instance.generate_response(
+        final_prompt_for_llm, 
+        is_user_question=True, 
+        max_tokens=250,
+        current_meeting_context=CURRENT_CONTEXT
+    )
     
     send_to_node({
         "event": "assistant", 
@@ -478,41 +582,101 @@ def handle_llm_query(payload):
     })
 
 def handle_settings_update(payload):
-    global current_config, SIMULATION_MODE
+    global current_config, SIMULATION_MODE, scheduler_instance # Added scheduler_instance
     global llm_instance, transcriber_instance, vision_analyzer_instance
 
     send_to_node({"event": "system_message", "message": f"Python: Received settings update: {payload}"})
+
+    # Determine if this is a full config update or a sectional one (from new API)
+    is_sectional_update = 'section' in payload and 'value' in payload
+    
+    config_to_process = {}
+    if is_sectional_update:
+        # For sectional updates, the 'value' contains the settings for that section
+        # We still update the main current_config, but also handle specific logic
+        section_key = payload['section']
+        config_to_process = {section_key: payload['value']}
+        current_config[section_key] = payload['value'] # Update the global config for that section
+    else:
+        # This is an old-style full update, or a direct component setting
+        config_to_process = payload
+        # Update global current_config with all keys from payload
+        for key, value in payload.items():
+            current_config[key] = value
+
+
+    # Specific section handling for hot-reloading
+    if is_sectional_update:
+        section_updated = payload.get('section')
+        new_section_value = payload.get('value')
+
+        if section_updated == 'scheduling' and new_section_value and scheduler_instance:
+            q_interval = new_section_value.get('quickIntervalSec', current_config.get('scheduling',{}).get('quickIntervalSec',10))
+            s_interval = new_section_value.get('summaryIntervalSec', current_config.get('scheduling',{}).get('summaryIntervalSec',60))
+            print(f"[AssistantWorker] Received scheduling update: Quick={q_interval}s, Summary={s_interval}s", flush=True)
+            scheduler_instance.reset(q_interval, s_interval)
+            send_to_node({"event": "status", "message_type": "info", "component": "Scheduler", "content": f"Intervals updated: Quick {q_interval}s, Summary {s_interval}s."})
+
+        elif section_updated == 'contextPresets':
+            print(f"[AssistantWorker] Received contextPresets update. {len(new_section_value) if isinstance(new_section_value, list) else 0} presets.", flush=True)
+            send_to_node({"event": "status", "message_type": "info", "component": "Config", "content": "Context presets updated."})
+            # CURRENT_CONTEXT updates are handled by start_meeting
+        
+    # Existing logic for component-specific updates (e.g., model changes)
+    # This needs to work with both full payloads and potentially sectional ones if they overlap
+    # For simplicity, we assume model/stream changes come as direct keys in payload or within a section value
 
     stream_config_changed = False
     llm_model_changed = False
     whisper_model_changed = False
     ocr_config_changed = False
 
-    for key, value in payload.items():
-        if key in current_config:
-            if current_config[key] != value:
-                if key == "stream":
-                    if current_config.get("stream", {}).get("url") != value.get("url") or \
-                       current_config.get("stream", {}).get("type") != value.get("type"):
-                        stream_config_changed = True
-                elif key == "llmModel":
-                    llm_model_changed = True
-                elif key == "whisperModel":
-                    whisper_model_changed = True
-                elif key == "ocrMode":
-                    ocr_config_changed = True
-        current_config[key] = value
-        # send_to_node({"event": "system_message", "message": f"Python Config: '{key}' updated to '{value}'."}) # Can be verbose
+    # Check for changes that require component re-initialization or specific actions
+    # This part might need refinement based on how sectional updates are structured for these components
+    # For now, assume direct keys in payload or in the 'value' of a sectional update
+    
+    # If it's a sectional update, the 'value' part holds the actual settings for that section.
+    # If it's a general update, 'payload' itself holds the settings.
+    # We've already updated current_config. Now check specific keys for component actions.
+
+    # Example: if payload = {"section": "whisper", "value": {"whisperModel": "large"}}
+    # or payload = {"whisperModel": "large"}
+    
+    update_data_source = payload.get('value') if is_sectional_update else payload
+
+    if "stream" in update_data_source and isinstance(update_data_source["stream"], dict):
+        if current_config.get("stream", {}).get("url") != update_data_source["stream"].get("url") or \
+           current_config.get("stream", {}).get("type") != update_data_source["stream"].get("type"):
+            stream_config_changed = True
+            current_config["stream"] = update_data_source["stream"] # Ensure current_config is fully updated
+
+    if "whisperModel" in update_data_source:
+        if current_config.get("whisperModel") != update_data_source["whisperModel"]:
+            whisper_model_changed = True
+            current_config["whisperModel"] = update_data_source["whisperModel"]
+            
+    if "llmModel" in update_data_source:
+        if current_config.get("llmModel") != update_data_source["llmModel"]:
+            llm_model_changed = True
+            current_config["llmModel"] = update_data_source["llmModel"]
+
+    if "ocrMode" in update_data_source:
+        if current_config.get("ocrMode") != update_data_source["ocrMode"]:
+            ocr_config_changed = True
+            current_config["ocrMode"] = update_data_source["ocrMode"]
+    
+    # For llmBackend and llmEndpoints, they are usually part of a larger config structure.
+    # We assume if they are in update_data_source, they signal a need for LLM reconfig.
+    llm_config_keys_changed = any(key in update_data_source for key in ['llmBackend', 'llmEndpoints'])
+
 
     if whisper_model_changed and transcriber_instance:
         if hasattr(transcriber_instance, 'set_model'):
-            # Pass new config values for device and compute_type if they exist in payload, else use current or defaults
-            new_model_name = current_config.get("whisperModel", "base")
-            device = payload.get('whisperDevice', current_config.get('whisperDevice', 'cpu'))
-            compute_type = payload.get('whisperComputeType', current_config.get('whisperComputeType', 'default'))
-            current_config['whisperDevice'] = device # Ensure current_config is updated
-            current_config['whisperComputeType'] = compute_type # Ensure current_config is updated
-
+            # Use values from current_config as it's now the source of truth
+            new_model_name = current_config.get("whisperModel", "base") # From updated current_config
+            device = current_config.get('whisperDevice', 'cpu')
+            compute_type = current_config.get('whisperComputeType', 'default')
+            
             status_msg = transcriber_instance.set_model(
                 model_name=new_model_name, 
                 device=device, 
@@ -525,27 +689,93 @@ def handle_settings_update(payload):
             send_to_node({"event": "warning", "message": "Transcriber instance does not support dynamic model setting."})
 
     # LLM settings update
-    if llm_instance and (llm_model_changed or any(key in payload for key in ['llmBackend', 'llmEndpoints'])):
+    if llm_instance and (llm_model_changed or llm_config_keys_changed):
         if hasattr(llm_instance, 'set_config'):
-            status_msg = llm_instance.set_config(current_config) # Pass the entire updated current_config
+            status_msg = llm_instance.set_config(current_config) 
             send_to_node({"event": "status", "message_type": "info", "component": "LLM", "content": f"LLM settings update: {status_msg}"})
-            if llm_instance.llm_backend == "NONE" or not llm_instance.model:
-                 send_to_node({"event": "status", "message_type": "error", "component": "LLM", "content": "Failed to initialize/reload LLM with new settings."})
+            if llm_instance.llm_backend == "NONE" or not llm_instance.model: # Check if LLM became non-functional
+                 send_to_node({"event": "status", "message_type": "error", "component": "LLM", "content": "LLM re-initialization failed or no backend configured."})
         else:
             send_to_node({"event": "warning", "message": "LLM instance does not support dynamic config setting."})
 
-
     if ocr_config_changed and vision_analyzer_instance:
         if hasattr(vision_analyzer_instance, 'set_ocr_active'):
-            vision_analyzer_instance.set_ocr_active(current_config["ocrMode"] != "OFF")
+            vision_analyzer_instance.set_ocr_active(current_config.get("ocrMode") != "OFF")
 
-    if stream_config_changed and transcription_active:
+    if stream_config_changed and transcription_active: # If stream URL/type changed and we are live
         send_to_node({"event": "system_message", "message": "Python: Stream config changed while active. Restarting stream."})
-        start_stream() 
+        start_stream() # This will stop existing ffmpeg and start new one
 
-    if "simulation_mode" in payload:
+    # Handle simulation_mode if present directly in payload (not sectional)
+    if not is_sectional_update and "simulation_mode" in payload:
         SIMULATION_MODE = bool(payload["simulation_mode"])
         send_to_node({"event": "system_message", "message": f"Python: Simulation mode set to {SIMULATION_MODE}."})
+
+
+def handle_start_meeting_command(payload):
+    global MEETING_ID, CURRENT_CONTEXT, current_meeting_id, transcription_active, transcript_buffer, slide_text_buffer, scheduler_instance
+
+    # If a meeting is already running (transcription active), stop it first.
+    # This simplifies state management; alternative is to send error.
+    if transcription_active:
+        send_to_node({"event": "status", "message_type": "warning", "component": "Meeting", "content": "Meeting already in progress. Stopping current meeting before starting new one."})
+        # Simulate stop_transcription command effects
+        transcription_active = False # Set flag first
+        if scheduler_instance:
+            scheduler_instance.stop()
+        if ffmpeg_process:
+            ffmpeg_process.terminate()
+            try: ffmpeg_process.wait(timeout=1)
+            except subprocess.TimeoutExpired: ffmpeg_process.kill()
+            ffmpeg_process = None
+        global simulation_thread
+        if simulation_thread and simulation_thread.is_alive():
+            simulation_thread.join(timeout=1)
+        # Buffers will be cleared below anyway.
+
+    # Set new meeting ID
+    MEETING_ID = payload.get('meetingId')
+    if not MEETING_ID:
+        MEETING_ID = f"mtg_{uuid.uuid4()}"
+    current_meeting_id = MEETING_ID 
+
+    # Set new context
+    CURRENT_CONTEXT = payload.get('context', {}) 
+
+    send_to_node({
+        "event": "meeting_started", 
+        "meetingId": MEETING_ID, 
+        "context_received": CURRENT_CONTEXT,
+        "message": f"Meeting {MEETING_ID} started with context: {CURRENT_CONTEXT.get('name', CURRENT_CONTEXT.get('role','N/A'))}"
+    })
+    print(f"[AssistantWorker] Meeting {MEETING_ID} started. Context: {CURRENT_CONTEXT}", flush=True)
+
+    # Clear previous buffers for the new meeting
+    transcript_buffer.clear()
+    slide_text_buffer.clear()
+    # TODO: Consider namespacing VectorDB entries by meeting_id or clearing relevant parts of VDB
+    # For now, VDB is additive across meetings unless specific filtering is added to queries.
+    send_to_node({"event": "status", "message_type": "info", "component": "Buffers", "content": "Transcript and slide buffers cleared for new meeting."})
+
+    # Automatically start transcription and scheduler when a meeting starts
+    transcription_active = True # Set flag
+    
+    # Attempt to start stream if Whisper is ready
+    if transcriber_instance and transcriber_instance.model:
+        start_stream() 
+    else:
+        send_to_node({"event": "status", "message_type": "error", "component": "Whisper", "content": "Whisper model not ready. Live transcription may not start."})
+        # If SIMULATION_MODE is true, simulation_loop will still run below.
+    
+    # Start simulation loop if in SIMULATION_MODE and ffmpeg is not running (or failed to start)
+    if SIMULATION_MODE and not (ffmpeg_process and ffmpeg_process.poll() is None):
+        # global simulation_thread # Already global
+        if simulation_thread is None or not simulation_thread.is_alive():
+            simulation_thread = threading.Thread(target=simulation_loop, daemon=True)
+            simulation_thread.start()
+
+    if scheduler_instance:
+        scheduler_instance.start()
 
 
 # --- Main Application Logic ---
@@ -556,17 +786,16 @@ if __name__ == "__main__":
     data_buffer = b""
     try:
         while True:
-            chunk = sys.stdin.buffer.read(1) # Read one byte at a time, non-blocking would be better for graceful shutdown
-            if not chunk: # End of stream
+            chunk = sys.stdin.buffer.read(1) 
+            if not chunk: 
                 send_to_node({"event": "system_message", "message": "Python: stdin stream closed."})
                 break 
             
             data_buffer += chunk
             
-            # Process messages separated by null characters
             while b'\0' in data_buffer:
                 message_str, data_buffer = data_buffer.split(b'\0', 1)
-                if not message_str: # Empty message before a delimiter
+                if not message_str: 
                     continue
                 
                 try:
@@ -575,42 +804,64 @@ if __name__ == "__main__":
                     command = command_data.get("command")
                     payload = command_data.get("payload", {})
 
-                    if command == "start_transcription":
+                    if command == "start_transcription": # This command might be deprecated in favor of start_meeting
                         if not transcription_active:
-                            transcription_active = True
-                            start_stream() 
-                            transcription_thread = threading.Thread(target=transcription_loop, daemon=True)
-                            transcription_thread.start()
-                            send_to_node({"event": "system_message", "message": "Python: Transcription started."})
+                            # Start a default/adhoc meeting if not already started
+                            if not MEETING_ID or not CURRENT_CONTEXT: # If no meeting context exists
+                                adhoc_meeting_id = f"adhoc_mtg_{uuid.uuid4()}"
+                                handle_start_meeting_command({"meetingId": adhoc_meeting_id, "context": {"role": "General Assistant", "purpose": "Adhoc Transcription"}})
+                            else: # Meeting context exists, just ensure transcription and scheduler are running
+                                transcription_active = True
+                                if transcriber_instance and transcriber_instance.model: start_stream()
+                                if scheduler_instance: scheduler_instance.start()
+                                if SIMULATION_MODE and not (ffmpeg_process and ffmpeg_process.poll() is None):
+                                    global simulation_thread
+                                    if simulation_thread is None or not simulation_thread.is_alive():
+                                        simulation_thread = threading.Thread(target=simulation_loop, daemon=True)
+                                        simulation_thread.start()
+                            send_to_node({"event": "system_message", "message": "Python: Adhoc/Existing Transcription started."})
                         else:
                             send_to_node({"event": "system_message", "message": "Python: Transcription already active."})
                     
-                    elif command == "stop_transcription":
+                    elif command == "stop_transcription": # This command might be deprecated
                         if transcription_active:
-                            transcription_active = False
+                            transcription_active = False # Set flag first
+                            if scheduler_instance: scheduler_instance.stop()
                             if ffmpeg_process:
-                                send_to_node({"event": "system_message", "message": "Python: Stopping ffmpeg process..."})
                                 ffmpeg_process.terminate()
+                                try: ffmpeg_process.wait(timeout=1)
+                                except subprocess.TimeoutExpired: ffmpeg_process.kill()
                                 ffmpeg_process = None
-                            if transcription_thread and transcription_thread.is_alive():
-                                transcription_thread.join(timeout=2) 
-                            send_to_node({"event": "system_message", "message": "Python: Transcription stopped."})
+                            global simulation_thread 
+                            if simulation_thread and simulation_thread.is_alive():
+                                simulation_thread.join(timeout=1) 
+                            send_to_node({"event": "system_message", "message": "Python: Transcription stopped. Meeting context retained."})
+                            # Note: Meeting context (MEETING_ID, CURRENT_CONTEXT) is not cleared here.
+                            # start_meeting is responsible for clearing/setting new context.
                         else:
                             send_to_node({"event": "system_message", "message": "Python: Transcription not active."})
+                    
+                    elif command == "start_meeting":
+                        handle_start_meeting_command(payload)
 
                     elif command == "start_vision":
                         if not vision_active:
                             vision_active = True
-                            vision_thread = threading.Thread(target=vision_loop, daemon=True)
-                            vision_thread.start()
+                            global vision_thread 
+                            if vision_thread is None or not vision_thread.is_alive():
+                                vision_thread = threading.Thread(target=vision_loop, daemon=True)
+                                vision_thread.start()
+                            send_to_node({"event": "system_message", "message": "Python: Vision analysis started."})
                         else:
                             send_to_node({"event": "system_message", "message": "Python: Vision analysis already active."})
 
                     elif command == "stop_vision":
                         if vision_active:
                             vision_active = False
+                            global vision_thread 
                             if vision_thread and vision_thread.is_alive():
                                 vision_thread.join(timeout=2)
+                            send_to_node({"event": "system_message", "message": "Python: Vision analysis stopped."})
                         else:
                             send_to_node({"event": "system_message", "message": "Python: Vision analysis not active."})
                     
@@ -624,10 +875,14 @@ if __name__ == "__main__":
                         send_to_node({"event": "system_message", "message": "Python: Received stop_application. Shutting down."})
                         transcription_active = False
                         vision_active = False
-                        if ffmpeg_process: ffmpeg_process.terminate()
-                        if transcription_thread and transcription_thread.is_alive(): transcription_thread.join(timeout=2)
-                        if vision_thread and vision_thread.is_alive(): vision_thread.join(timeout=2)
-                        sys.exit(0) # Clean exit after stop_application
+                        if scheduler_instance: scheduler_instance.stop()
+                        if ffmpeg_process: 
+                            ffmpeg_process.terminate()
+                            try: ffmpeg_process.wait(timeout=1)
+                            except subprocess.TimeoutExpired: ffmpeg_process.kill()
+                        if simulation_thread and simulation_thread.is_alive(): simulation_thread.join(timeout=1) # type: ignore
+                        if vision_thread and vision_thread.is_alive(): vision_thread.join(timeout=1) # type: ignore
+                        sys.exit(0) 
 
                     else:
                         send_to_node({"event": "warning", "message": f"Python: Unknown command received: {command}"})
@@ -645,10 +900,13 @@ if __name__ == "__main__":
     except Exception as e:
         send_to_node({"event": "critical", "message": f"Python: Critical error in main loop: {str(e)}"})
     finally:
-        transcription_active = False
+        transcription_active = False # Ensure flags are false for loop exits
         vision_active = False
-        if ffmpeg_process: ffmpeg_process.terminate()
-        if transcription_thread and transcription_thread.is_alive(): transcription_thread.join(timeout=1)
-        if vision_thread and vision_thread.is_alive(): vision_thread.join(timeout=1)
+        if scheduler_instance: scheduler_instance.stop()
+        if ffmpeg_process: 
+            ffmpeg_process.terminate()
+            # Minimal wait here as process is exiting anyway
+        # No need to join threads here usually as daemon=True should make them exit with main
+        # but if they perform critical cleanup, join them. For now, assume daemon threads are fine.
         send_to_node({"event": "system_message", "message": "Python: Exited."})
         sys.exit(0)

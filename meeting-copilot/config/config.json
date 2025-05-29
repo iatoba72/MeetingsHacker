@@ -7,5 +7,19 @@
   "llmBackend": "LOCAL",
   "llmEndpoints": [{ "name": "local_llm", "url": "http://localhost:8080/completion", "key": "" }],
   "quickPrompt": "Provide a quick insight based on the latest transcript: {transcript}",
-  "summaryPrompt": "Summarize the meeting so far, focusing on key decisions and action items, based on: {transcript} and slide content: {slides}"
+  "summaryPrompt": "Summarize the meeting so far, focusing on key decisions and action items, based on: {transcript} and slide content: {slides}",
+  "scheduling": {
+    "quickIntervalSec": 10,
+    "summaryIntervalSec": 60,
+    "questionTrigger": true
+  },
+  "contextPresets": [
+    {
+      "id": "default_general",
+      "name": "General Assistant",
+      "role": "You are a versatile AI meeting assistant. Be concise and helpful.",
+      "purpose": "General purpose meeting assistance, note-taking, and insights.",
+      "defaultMeetings": []
+    }
+  ]
 }

@@ -9,7 +9,7 @@ import time
 
 from vector_db import query as vec_query, initialized_successfully as vdb_initialized_successfully # Vector DB integration
 
-SYSTEM_PROMPT = "You are a helpful meeting assistant. Analyze the provided context and user question to provide concise and relevant answers or summaries."
+DEFAULT_SYSTEM_PROMPT = "You are a helpful meeting assistant. Analyze the provided context and user question to provide concise and relevant answers or summaries." # Renamed for clarity
 
 class LLMProcessor:
     def __init__(self, config=None):
@@ -23,6 +23,27 @@ class LLMProcessor:
         self.tokenizer = None # For Local
         
         self._load_model()
+
+    def _build_final_prompt(self, user_text, context_str, current_meeting_context=None):
+        # Prepend role and purpose from current_meeting_context if available
+        meeting_role_str = ""
+        if current_meeting_context and isinstance(current_meeting_context, dict):
+            role = current_meeting_context.get('role')
+            purpose = current_meeting_context.get('purpose')
+            if role:
+                meeting_role_str += f"Your role: {role}. "
+            if purpose:
+                meeting_role_str += f"The purpose of this discussion: {purpose}. "
+        
+        # Original system_prompt logic
+        system_prompt_template = self.config.get('llmSystemPrompt', DEFAULT_SYSTEM_PROMPT) # Use default from class
+        
+        final_system_prompt = system_prompt_template
+        if meeting_role_str:
+            final_system_prompt = f"{meeting_role_str.strip()} {system_prompt_template}"
+            
+        return f"{final_system_prompt}\n\n# Relevant Context from Meeting History:\n{context_str}\n\n# User's Request:\n{user_text}\n\n# Answer:"
+
 
     def _load_model(self):
         print(f"[LLMProcessor] Initializing LLM. Backend: {self.llm_backend}, Model: {self.model_name_or_path}", flush=True)
@@ -74,13 +95,14 @@ class LLMProcessor:
         self.tokenizer = None
         self.client = None
 
-    def generate_response(self, prompt, is_user_question=False, max_tokens=150):
+    def generate_response(self, user_text_or_task_detail, is_user_question=False, max_tokens=150, current_meeting_context=None):
         """
         Generates a response from the LLM based on the provided prompt.
         Parameters:
-            prompt (str): The input prompt for the LLM.
-            is_user_question (bool): Flag indicating if this is a direct user question (might influence formatting or specific API calls).
+            user_text_or_task_detail (str): The user's question or details of the task (e.g. "summarize this").
+            is_user_question (bool): Flag indicating if this is a direct user question.
             max_tokens (int): The maximum number of tokens to generate.
+            current_meeting_context (dict, optional): Contains 'role' and 'purpose' for the meeting.
         Returns:
             str: The LLM's generated response, or an error message if not available.
         """
@@ -88,34 +110,34 @@ class LLMProcessor:
             return "[ERROR: LLM not available or not loaded properly]"
 
         # Context Retrieval from VectorDB
-        context_str = "[No context retrieved from VectorDB]"
+        context_snippets_str = "[No context retrieved from VectorDB]"
         if vdb_initialized_successfully:
-            query_for_vdb = prompt 
-            if len(prompt) > 256: # Optional: Truncate very long prompts
-                query_for_vdb = prompt[:256]
+            query_for_vdb = user_text_or_task_detail
+            if len(user_text_or_task_detail) > 256: # Optional: Truncate very long prompts for VDB query
+                query_for_vdb = user_text_or_task_detail[:256]
             
             if query_for_vdb.strip():
                 context_items = vec_query(query_for_vdb, top_k=3)
                 if context_items and isinstance(context_items, list) and not any("[ERROR:" in str(s) for s in context_items):
                     valid_texts = [item.get('text', str(item)) for item in context_items if isinstance(item, dict) and item.get('text')]
-                    if not valid_texts:
+                    if not valid_texts: # Fallback if items are just strings (should not happen with current vec_query)
                          valid_texts = [str(item) for item in context_items if isinstance(item, str) and not "[ERROR:" in item]
                     if valid_texts:
-                        context_str = "\n".join([f"> {text_item}" for text_item in valid_texts])
+                        context_snippets_str = "\n".join([f"> {text_item}" for text_item in valid_texts])
                     else:
-                        context_str = "[No relevant text found in VectorDB for this query]"
+                        context_snippets_str = "[No relevant text found in VectorDB for this query]"
             else:
-                context_str = "[VectorDB query was empty or invalid]"
+                context_snippets_str = "[VectorDB query was empty or invalid]"
         
-        final_prompt = f"{SYSTEM_PROMPT}\n\n# Relevant Context from Meeting History:\n{context_str}\n\n# User's Request:\n{prompt}\n\n# Answer:"
-
+        final_prompt = self._build_final_prompt(user_text_or_task_detail, context_snippets_str, current_meeting_context=current_meeting_context)
+        
         # Simulate processing delay
         time.sleep(0.1) 
 
         # TODO: Implement actual generation logic using final_prompt for LOCAL (HuggingFace)
         if self.llm_backend == "LOCAL":
             # input_ids = self.tokenizer.encode(final_prompt, return_tensors="pt")
-            # output_sequences = self.model.generate(input_ids, max_length=max_tokens)
+            # output_sequences = self.model.generate(input_ids, max_length=max_tokens) # Consider final_prompt includes user_text already
             # response_text = self.tokenizer.decode(output_sequences[0], skip_special_tokens=True)
             # return response_text
             return f"[Simulated LOCAL LLM ({self.model_name_or_path}) response to: {final_prompt[:150]}... Max tokens: {max_tokens}]"
@@ -124,9 +146,13 @@ class LLMProcessor:
         elif self.llm_backend == "OPENAI":
             # if self.client:
             #     try:
+            #         # Construct messages for OpenAI API - system prompt already incorporated in final_prompt
+            #         # For Chat models, usually it's a list of messages.
+            #         # We can pass the whole final_prompt as a user message, or try to parse it.
+            #         # Simplified: treat final_prompt (which has system, context, user request) as the main content.
             #         completion = self.client.chat.completions.create(
             #             model=self.model_name_or_path, 
-            #             messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": f"# Relevant Context:\n{context_str}\n\n# User's Request:\n{prompt}"}],
+            #             messages=[{"role": "user", "content": final_prompt}], # Or construct more detailed messages
             #             max_tokens=max_tokens
             #         )
             #         return completion.choices[0].message.content

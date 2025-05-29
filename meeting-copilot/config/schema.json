@@ -20,7 +20,39 @@
         "required":["name","url"]
     }},
     "quickPrompt":{"type":"string"},
-    "summaryPrompt":{"type":"string"}
+    "summaryPrompt":{"type":"string"},
+    "scheduling": {
+      "type": "object",
+      "description": "Settings for scheduled tasks like insights and summaries.",
+      "properties": {
+        "quickIntervalSec": { "type": "integer", "minimum": 5, "maximum": 30, "default": 10, "description": "Interval for quick insights in seconds." },
+        "summaryIntervalSec": { "type": "integer", "minimum": 30, "maximum": 600, "default": 60, "description": "Interval for summaries in seconds." },
+        "questionTrigger": { "type": "boolean", "default": true, "description": "Enable/disable insight trigger on user questions (ending with '?')." }
+      },
+      "required": ["quickIntervalSec", "summaryIntervalSec", "questionTrigger"],
+      "additionalProperties": false
+    },
+    "contextPresets": {
+      "type": "array",
+      "description": "Saved context presets for meetings.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Unique identifier for the preset." },
+          "name": { "type": "string", "description": "User-friendly name for the preset." },
+          "role": { "type": "string", "description": "System role for the LLM (e.g., 'You are a helpful technical assistant focusing on software engineering.')" },
+          "purpose": { "type": "string", "description": "Purpose of this context preset (e.g., 'For sprint planning meetings.')" },
+          "defaultMeetings": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "IDs of past meetings to typically include for this context."
+          }
+        },
+        "required": ["id", "name", "role", "purpose"],
+        "additionalProperties": false
+      },
+      "default": []
+    }
   },
-  "required":["stream","whisperModel","llmModel","ocrMode","llmBackend","llmEndpoints","quickPrompt","summaryPrompt"]
+  "required":["stream","whisperModel","llmModel","ocrMode","llmBackend","llmEndpoints","quickPrompt","summaryPrompt", "scheduling", "contextPresets"]
 }

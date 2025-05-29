@@ -26,7 +26,7 @@ try:
     # Note: For PersistentClient, the path should be to a directory where Chroma can store its files.
     client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR) # path expects a dir
     
-    embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, device='cpu')
     
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
@@ -35,7 +35,7 @@ try:
     )
     chroma_available = True
     print(f"[VectorDB] Initialized. ChromaDB will persist to: {CHROMA_PERSIST_DIR}", flush=True)
-    print(f"[VectorDB] Using embedding model: {EMBEDDING_MODEL_NAME}", flush=True)
+    print(f"[VectorDB] Using embedding model: {EMBEDDING_MODEL_NAME} on CPU.", flush=True)
     print(f"[VectorDB] Collection '{COLLECTION_NAME}' loaded/created. Count: {collection.count()}", flush=True)
 
 except ImportError as e:
@@ -45,8 +45,8 @@ except ImportError as e:
     if 'SentenceTransformer' not in globals() and 'embedder' not in globals(): # Check if ST loaded
         try:
             from sentence_transformers import SentenceTransformer # type: ignore
-            embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
-            print(f"[VectorDB] SentenceTransformer loaded for in-memory fallback.", flush=True)
+            embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, device='cpu')
+            print(f"[VectorDB] SentenceTransformer loaded on CPU for in-memory fallback.", flush=True)
         except ImportError:
             print(f"[VectorDB] CRITICAL: SentenceTransformer import failed. In-memory fallback will not have embeddings.", file=sys.stderr, flush=True)
             embedder = None # Ensure it's None
@@ -56,8 +56,8 @@ except Exception as e: # Catch other potential errors during ChromaDB client ini
     if 'embedder' not in globals() and 'SentenceTransformer' in globals() and embedder is None: # Re-check if ST loaded but client failed
          try:
             from sentence_transformers import SentenceTransformer # type: ignore
-            embedder = SentenceTransformer(EMBEDDING_MODEL_NAME) # Attempt to load embedder for fallback
-            print(f"[VectorDB] SentenceTransformer loaded for in-memory fallback after client error.", flush=True)
+            embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, device='cpu') # Attempt to load embedder for fallback
+            print(f"[VectorDB] SentenceTransformer loaded on CPU for in-memory fallback after client error.", flush=True)
          except Exception as se:
             print(f"[VectorDB] CRITICAL: SentenceTransformer also failed for fallback: {se}", file=sys.stderr, flush=True)
             embedder = None
@@ -163,6 +163,74 @@ def query(text: str, top_k: int = 3):
             hits.append({"text": f"[ERROR: In-memory query failed: {e}]", "meta": {}, "score": 0.0})
         
     return hits
+
+def get_distinct_meeting_ids():
+    """
+    Placeholder function to return a list of distinct meeting IDs.
+    TODO: Implement actual distinct meeting ID retrieval from ChromaDB metadata.
+          This will likely involve querying for all documents or using a specific
+          metadata field if ChromaDB's API allows for efficient distinct queries on metadata.
+          For now, returns a fixed list of dummy meeting data.
+    """
+    global chroma_available, collection, in_memory_cache
+    print("[VectorDB] get_distinct_meeting_ids called.", flush=True)
+
+    if not chroma_available:
+        print("[VectorDB] ChromaDB not available. Returning dummy meeting IDs from cache if any, or default.", file=sys.stderr, flush=True)
+        if in_memory_cache:
+            distinct_meetings = {}
+            for item in in_memory_cache:
+                meta = item.get("meta", {})
+                meeting_id = meta.get("meeting_id")
+                if meeting_id and meeting_id not in distinct_meetings:
+                    distinct_meetings[meeting_id] = {
+                        "id": meeting_id,
+                        "title": meta.get("meeting_title", f"Meeting {meeting_id} (from cache)"),
+                        "date": meta.get("timestamp_iso", meta.get("timestamp", "Unknown Date")) 
+                    }
+            if distinct_meetings:
+                return list(distinct_meetings.values())
+        return [{"id": "dummy_meeting_1_fallback", "title": "Dummy Meeting (Fallback)", "date": "2023-01-01"}]
+
+    # Placeholder for actual ChromaDB query for distinct meeting_ids
+    # This is a simplified and potentially inefficient way if collection is large.
+    try:
+        count = collection.count()
+        if count == 0:
+            print("[VectorDB] Collection is empty, no meetings found.", flush=True)
+            return []
+        
+        # Fetch all metadatas. This can be very inefficient for large collections.
+        # A more scalable solution would involve specific metadata queries or a separate index.
+        # ChromaDB's standard API might not directly support "distinct" on metadata fields efficiently.
+        # We fetch a limited number of items and deduce meetings from there as a placeholder.
+        results = collection.get(limit=min(count, 500), include=['metadatas']) # Limit to 500 to avoid overload
+        
+        all_metadatas = results.get('metadatas', [])
+        if not all_metadatas:
+            print("[VectorDB] No metadatas found in collection results.", flush=True)
+            return []
+
+        distinct_meetings = {} 
+        for meta in all_metadatas:
+            if meta and 'meeting_id' in meta:
+                meeting_id = meta['meeting_id']
+                if meeting_id not in distinct_meetings:
+                    distinct_meetings[meeting_id] = {
+                        "id": meeting_id,
+                        "title": meta.get('meeting_title', f"Meeting {meeting_id}"), 
+                        "date": meta.get('timestamp_iso', meta.get('timestamp', "Unknown Date")) 
+                    }
+        
+        if not distinct_meetings:
+             print("[VectorDB] No meetings with 'meeting_id' found in fetched metadata.", flush=True)
+        
+        return list(distinct_meetings.values())
+
+    except Exception as e:
+        print(f"[VectorDB] Error fetching distinct meeting IDs from Chroma: {e}", file=sys.stderr, flush=True)
+        return [{"id": "dummy_meeting_error_chroma", "title": "Error fetching meetings (Chroma)", "date": "2023-01-03"}]
+
 
 # Test calls (optional, can be removed or put under if __name__ == "__main__":)
 # if __name__ == "__main__":

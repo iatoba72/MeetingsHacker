@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'; // Added useRef
 import { socket } from '../socket';
 import AssistantFeed from '../components/AssistantFeed';
-// import LiveControls from '../components/LiveControls'; // TODO: Consider for transcription/vision toggles
+// import LiveControls from '../components/LiveControls';
 
-function LiveFeed() {
+function LiveFeed({ currentMeetingId, requestContextSetup, theme = 'dark' }) { // Added theme prop
   const [messages, setMessages] = useState([]);
   const messagesEndRef = useRef(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
@@ -105,12 +105,20 @@ function LiveFeed() {
   // Wrap AssistantFeed in a div that can be the scrollable container
   // AssistantFeed itself is responsible for rendering individual messages and the input bar.
   // The messagesEndRef should be placed after the list of messages within AssistantFeed or its child.
+  
+  const scrollToBottomSmooth = () => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+    setUserScrolledUp(false); // Reset the state after manually scrolling down
+  };
+
   return (
-    <div className="flex flex-col h-full bg-slate-900">
+    <div className={`flex flex-col h-full ${theme === 'dark' ? 'bg-slate-900' : 'bg-slate-100'}`}>
       {/* 
       <LiveControls 
-        transcriptionActive={transcriptionActive}
-        visionActive={visionActive}
+        transcriptionActive={transcriptionActive} // TODO: Pass these if implementing controls here
+        visionActive={visionActive} // TODO: Pass these if implementing controls here
         onToggleTranscription={handleToggleTranscription}
         onToggleVision={handleToggleVision}
       /> 
@@ -118,13 +126,29 @@ function LiveFeed() {
       <div 
         ref={scrollableContainerRef}
         onScroll={handleScroll} 
-        className="flex-grow overflow-y-auto p-4 space-y-4" // This div will scroll
+        className="flex-grow overflow-y-auto p-4 space-y-4 relative" // Added relative for button positioning
       >
         <AssistantFeed 
           messages={messages} 
           onSendMessage={handleSendMessage} 
-          messagesEndRef={messagesEndRef} // Pass ref to AssistantFeed
+          messagesEndRef={messagesEndRef} 
+          theme={theme} // Pass theme to AssistantFeed
         />
+        {userScrolledUp && (
+          <button 
+            onClick={scrollToBottomSmooth}
+            className={`absolute bottom-20 right-6 p-3 rounded-full shadow-lg transition-opacity duration-300 hover:opacity-100
+                        ${theme === 'dark' ? 'bg-blue-600 text-white hover:bg-blue-500' 
+                                         : 'bg-indigo-600 text-white hover:bg-indigo-500'}
+                        ${userScrolledUp ? 'opacity-80' : 'opacity-0'}`}
+            aria-label="Scroll to latest messages"
+            title="Scroll to latest messages"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   );

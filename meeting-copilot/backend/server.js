@@ -17,8 +17,10 @@ const { Server } = require('socket.io'); // For real-time bidirectional communic
 // Local module imports
 const configStore = require('./configStore');     // Manages application configuration.
 const pythonBridge = require('./python_bridge');  // Manages Python subprocess interaction.
-const configRoutes = require('./routes/config');    // API routes for /api/config.
+// const configRoutes = require('./routes/config');    // API routes for /api/config. - Will be initialized with io
 const templateRoutes = require('./routes/templates'); // API routes for /api/templates.
+const metaRoutes = require('./routes/meta'); // Added for /api/meta/* routes
+const infoRoutes = require('./routes/info'); // Routes for /api/models and /api/meetings
 
 // Initialize Express app and HTTP server.
 const app = express();
@@ -39,8 +41,15 @@ const PORT = process.env.PORT || 3001; // Default to 3001 if not specified.
 app.use(express.json()); // For parsing JSON request bodies from API calls.
 
 // --- API Routes ---
-app.use('/api/config', configRoutes);
+// app.use('/api/config', configRoutes); // Will be initialized with io
 app.use('/api/templates', templateRoutes);
+app.use('/api/meta', metaRoutes); // Use the new meta routes
+app.use('/api/info', infoRoutes); // Use the new info routes
+
+// Initialize routes that need access to the io instance
+const configRouter = require('./routes/config')(io);
+app.use('/api/config', configRouter);
+
 
 // --- Static Serving for /frames ---
 // Path Check: `../frames` correctly points to `meeting-copilot/frames/` from `meeting-copilot/backend/`.
